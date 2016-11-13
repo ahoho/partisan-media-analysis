@@ -1,0 +1,67 @@
+To update:
+page_data = pd.read_csv('./Input/included_sources.csv')
+pages = page_data.link.replace(re.compile('https://www.facebook.com/|/'),
+                               '').tolist()
+
+fbc = FBGraphCrawler(access_token, sql_path, pages)
+
+# missed or extra pages
+new_pages = {'conservativeladynews': '112415152112864',
+			'ifyouonlynews': '762592150466931',
+			'thenewcivilrightsmovement': '358168880614',
+			'infowars': '80256732576'}
+fbc.pages.update(new_pages)
+
+Past SQL Queries:
+
+# delete dups
+DELETE FROM fb_posts_20161012
+WHERE ctid IN (SELECT ctid
+               FROM (SELECT ctid, row_number() over (partition BY post_id ORDER BY ctid) as rnum
+               		 FROM fb_posts_20161012) t
+               WHERE t.rnum > 1)
+
+# add id col
+CREATE UNIQUE INDEX post_id_temp_idx ON fb_posts_20161012 (post_id);
+ALTER TABLE fb_posts_20161012
+	ADD CONSTRAINT fb_posts_pkey PRIMARY KEY USING INDEX post_id_temp_idx; 
+
+# remove dup URLS
+DELETE FROM fb_posts_20161012
+WHERE post_id IN (SELECT post_id
+              FROM (SELECT post_id,
+                             ROW_NUMBER() OVER (partition BY url ORDER BY shares DESC) AS rnum
+                     FROM fb_posts_20161012) t
+              WHERE t.rnum > 1);
+
+# do ts column
+ALTER TABLE articles ADD COLUMN text_srch_en_col tsvector;
+UPDATE articles SET text_srch_en_col =
+     to_tsvector('english', text);
+
+
+CREATE INDEX text_srch_en_idx ON articles USING GIN (text_srch_en_col);
+
+# search with
+SELECT * FROM articles
+WHERE text_srch_en_col @@ to_ts
+
+
+#####
+cd H:/personal/partisan media analysis/newsarchives
+b,e = 0, 5
+
+import pandas as pd
+from newsarchives.crawler import FBGraphCrawler
+
+pages = pd.read_csv('../pages_20161022.csv',  index_col = 'page_name', dtype = str)
+pages = pages.iloc[b:e].to_dict()['page_id']
+
+app_id = '348289145502674'
+app_secret = '9079ccfcbb0dd3fcdd7536a3e36ad6e2'
+access_token = '{}|{}'.format(app_id, app_secret)
+
+fbc = FBGraphCrawler(access_token, sqldb = 'postgres://postgres:postgres@localhost/articles', pages = {})
+fbc.pages = pages
+fbc.errors = {page:[] for page in list(fbc.pages.values())}
+fbc.save_all_page_feeds(through_date='2015-06-01')
