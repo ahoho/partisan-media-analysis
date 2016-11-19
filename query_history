@@ -57,8 +57,8 @@ from newsarchives.crawler import FBGraphCrawler
 pages = pd.read_csv('../pages_20161022.csv',  index_col = 'page_name', dtype = str)
 pages = pages.iloc[b:e].to_dict()['page_id']
 
-***REMOVED***
-***REMOVED***
+app_id = '348289145502674'
+app_secret = '9079ccfcbb0dd3fcdd7536a3e36ad6e2'
 access_token = '{}|{}'.format(app_id, app_secret)
 
 fbc = FBGraphCrawler(access_token, sqldb = 'postgres://postgres:postgres@localhost/articles', pages = {})
