@@ -1,0 +1,3 @@
+included_sources.csv - https://github.com/jonkeegan/blue-feed-red-feed-sources
+pew - http://www.journalism.org/2014/10/21/political-polarization-media-habits/
+pew - http://www.journalism.org/2014/10/21/appendix-c-trust-and-distrust-of-news-sources-by-ideological-group/

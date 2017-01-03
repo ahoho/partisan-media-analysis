@@ -1,0 +1,234 @@
+---
+title: "PMA: A Brief Look at Facebook Posts"
+author: "Alexander Hoyle"
+date: "December 27, 2016"
+output:
+  html_document:
+    code_folding: show
+---
+
+## Motivation
+
+Although the impending analysis will use news sources' text data we collected in the
+last post, I've decided to take a little detour and take a look at the Facebook
+pages that supported the article collection. I hope this will give us some broad
+insight into the nature of our data and the divided media ecosystem on Facebook.
+
+For this task, I'm using R, because I find it (combined with 
+[`dplyr`](https://github.com/hadley/dplyr)
+and [`magrittr`](https://github.com/tidyverse/magrittr))
+more suited to readable, procedural analysis of rectangular data than Pandas is.
+I also prefer `ggplot` to `matplotlib`.
+
+```{r setup, warning=FALSE, message=FALSE}
+library(dplyr)
+library(magrittr)
+library(ggplot2)
+library(extrafont)
+
+apply_plot_theme <- function(){
+  ## apply a common theme to a plot
+    theme_bw() +
+    theme(text = element_text(family = 'Calibri'))
+}
+```
+
+## Getting the data
+
+First, we'll pull the article information we stored in the database.
+
+I'm also merging in the Facebook study data on source partisanship in order to 
+incorporate source alignment into our analysis.
+
+```{r collect db data, eval=FALSE}
+article_db <- src_postgres('articles', user = 'postgres', password = 'postgres')
+fb_posts <- tbl(article_db, 'fb_posts')
+
+post_data <- 
+  fb_posts %>%
+  select(post_id, page_id, created_time, shares, retrieved_on) %>%
+  collect(n = Inf) %>% # dplyr is lazy unless explicitly told otherwise
+  filter(!duplicated(post_id)) %>%
+  
+  # create date columns
+  mutate(post_date = as.Date(created_time),
+         retrieved_date = as.Date(retrieved_on, '%a %b %d %H:%M:%S %Y'),
+         post_month = lubridate::floor_date(post_date, 'month'),
+         post_week =  lubridate::floor_date(post_date, 'week'))
+```
+
+```{r read, echo=FALSE}
+readRDS('C:/post_data.rds')->post_data
+```
+
+```{r collect external data, warning=FALSE, message=FALSE}
+alignment_data <-
+  read.csv('https://raw.githubusercontent.com/jonkeegan/blue-feed-red-feed-sources/master/included_sources.csv',
+           stringsAsFactors = FALSE) %>%
+  mutate(page_id = as.character(fb_id)) %>%
+  select(-fan_count)
+
+#updated fan counts gatherered using the FB graph API
+fan_counts <-
+  read.csv('./input/fan_count_20161228.csv',
+           colClasses = c('numeric', 'character'))
+  
+alignment_data %<>% inner_join(fan_counts)
+```
+
+## Posts over Time
+
+Just to get a sense of our data, we'll plot the number of posts and shares below.
+I look at distributions over the week to smooth the data and remove any cyclical
+effects.
+
+```{r plot function}
+# important dates
+sig_dates <-
+  data_frame(date = as.Date(c('2016-07-21', '2016-07-28', '2016-09-26',
+                              '2016-10-04', '2016-10-19', '2016-11-08')),
+             event = c('Rep. Convention', 'Dem. Convention', '1st Debate',
+                       '2nd Debate', '3rd Debate', 'Election Day'))
+
+plot_post_data <- function(data, ydat, ylab, ymax, plot_title, sig_dates){
+  ysteps <- seq(from = ymax, by = -ymax / 18, length.out = nrow(sig_dates))
+  
+  data %>%
+    # plot
+    ggplot(aes_string(x = 'post_week', y = ydat)) +
+    stat_summary(geom = 'smooth', color = '#00467f',
+                 fun.ymin = function(x) quantile(x, 0.05),
+                 fun.y = mean,
+                 fun.ymax = function(x) quantile(x, 0.95)) +
+    
+    # add significant dates to plot
+    geom_vline(data = sig_dates, 
+               aes(xintercept = as.numeric(lubridate::floor_date(date, 'week'))),
+               color = '#6A7277', alpha = 0.7) +
+    geom_label(data = sig_dates,
+               aes(x = lubridate::floor_date(date, 'week'),
+                   y = ysteps,
+                   label = event),
+               hjust = -0.015, family = 'Calibri', size = 3.5,
+               alpha = 0.65,
+               label.padding = unit(0.15, 'lines'),
+               label.size = NA) +
+    
+    # labels
+    labs(title = plot_title,
+         subtitle = '(bands show 90% interval, central line is mean)',
+         x = 'Date (Weekly)',
+         y = ylab) +
+    scale_y_continuous(labels = scales::comma) +
+  
+    # theming
+    apply_plot_theme()
+}
+
+```
+
+Note the increase in shares per post around the first debate and
+the subsequent dropoff following the election (most evident at the 95% percentile
+than at the mean).
+
+```{r plot posts, fig.width=8}
+# plot weekly post data
+post_data %>%
+    inner_join(alignment_data, by = 'page_id') %>%
+    filter(post_date >= as.Date('2015-06-15'),
+           post_date < as.Date('2016-12-25')) %>%
+    group_by(post_date, post_week, page_id) %>%
+    summarize(posts = n()) %>%
+    plot_post_data(ydat = 'posts', ylab = 'Posts per Page', ymax = 40,
+                   plot_title = 'Distribution of Posts per Page',
+                   sig_dates)
+
+# plot weekly share data
+post_data %>%
+    filter(!is.na(shares),
+           post_date >= as.Date('2015-06-15'),
+           post_date < as.Date('2016-12-25')) %>%
+    plot_post_data(ydat = 'shares', ylab = 'Shares', ymax = 4500,
+                   plot_title = 'Distribution of Shares per Post',
+                   sig_dates)
+    
+
+```
+
+## Effect of Partisanship on Sharing
+
+I thought it might be worthwhile to determine if there exists a relationship
+between the level of page partisanship and the likelihood of sharing a given
+post from that page.
+
+To this end, I group the post data by source and merge in the Facebook page
+alignment data. Here, pages are assigned a value on a [-2, +2] scale from left-leaning
+to right-leaning. I take its absolute value to create a measure of partisanship
+irrespective of political alignment.
+
+I then regress the number of shares per post on this measure, controlling for total
+followers and whether the source is left- or right-aligned. (Note that I remove a
+low-partisan point -- the *Tampa Bay Times* at 0.55 on our 0 to 2 scale -- since it has
+high leverage).
+
+We see that, on the left side of the spectrum, source partisanship appears to have
+a modestly significant relationship with the average number of shares per post.
+Since 'partisanship' is based  on the distribution of follower political identification,
+this supports the idea that those who are most ideologically driven are also most
+prone to sharing ("shares" being the [most important measure](http://www.adweek.com/news/advertising-branding/brands-favor-social-shares-over-likes-148256)
+of engagment on Facebook).
+
+Using post-level data would permit us to more meaningfully comment on the relationship between 
+partisan content and shares (controlling for sharer ideology), but
+we don't have such granular measures of bias. Rather, we are limited to the level of
+the page generating each post (I suppose we could use bootstrapping to estimate variance,
+but I think the below finding is sufficiently interesting for now). It's possible
+we'll develop a useful measure of partisanship based on the text data in a future
+post, at which point we can return to this question.
+
+As an aside, we are only looking at a subset of the `r n_distinct(post_data$page_id)`
+most partisan (and most popular) sources of the 500 found in the [Facebook study on ideological news](https://dataverse.harvard.edu/file.xhtml?fileId=2676555&version=2.2)
+that I cited in my first post (this is a result of filtering performed by the *Wall
+Street Journal* in the data they made public for 
+["Blue Feed, Red Feed"](http://graphics.wsj.com/blue-feed-red-feed/)). I've requested
+access to the data and will run this regression on the full set of sources at a later date.
+
+```{r regression on pages}
+page_data <-
+    post_data %>%
+    filter(post_date >= as.Date('2015-06-15'),
+           post_date <= as.Date('2016-12-25')) %>%
+    group_by(page_id) %>%
+    summarize(shares_per_post = mean(shares, na.rm = TRUE)) %>%
+
+    # include alignment data
+    inner_join(alignment_data, by = 'page_id') %>%
+    mutate(partisanship = abs(avg_align),
+           side = factor(side)) %>%
+    filter(partisanship > 0.55)
+
+model <-
+  lm(log(shares_per_post) ~ side:partisanship + log(fan_count) + side,
+     data = page_data)
+
+pander::pander(model)
+```
+
+Here's a plot that roughly approximates the regression.
+
+```{r plot regression like data}
+page_data %>%
+  # plot
+  ggplot(aes(y = log(shares_per_post) / log(fan_count), x = partisanship, color = side)) +
+  geom_point() +
+  geom_smooth(method=lm) +
+  
+  # labels
+  labs(title = 'Follower-Adjusted Shares by Partisan Alignment of News Source',
+       x = 'Source Partisanship',
+       y = 'Log(Shares Per Post) / Log(Total Followers)') +
+  
+  # themeing
+  scale_color_manual(name = 'Side', values = c('#00467f', '#EF4623')) +
+  apply_plot_theme()
+```

@@ -1,3 +1,6 @@
 .ipynb_checkpoints
 *.pyc
 nohup.out
+query_history
+dtm_creation.py
+*.html
