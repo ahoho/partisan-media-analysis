@@ -4,3 +4,5 @@ nohup.out
 query_history
 dtm_creation.py
 *.html
+.RData
+.Rhistory
